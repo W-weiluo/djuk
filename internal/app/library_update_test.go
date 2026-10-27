@@ -90,7 +90,8 @@ func TestUnifiedUpdateChecksNewContentAndContinuesCatalog(t *testing.T) {
 					}
 				}
 			}
-			ctx := withKnownHongguoDramas(context.WithValue(context.Background(), libraryUpdateKey{}, true), known)
+			ctx := withKnownHongguoDramas(context.WithValue(context.Background(), backgroundCatalogKey{}, true), known)
+			ctx = context.WithValue(ctx, libraryUpdateKey{}, true)
 			items, err := d.fetchHongguoAppCatalog(ctx)
 			if err != nil || len(items) != len(test.wantOffsets)*len(hongguoAppGenres) {
 				t.Fatalf("catalog result: %d items, %v", len(items), err)

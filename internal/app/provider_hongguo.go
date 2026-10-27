@@ -107,11 +107,6 @@ func (d *Downloader) fetchHongguoRoute(ctx context.Context, route, category stri
 	return dramas, nil
 }
 
-func (d *Downloader) fetchHongguoCategory(ctx context.Context, route, category string) ([]Drama, error) {
-	items, _, err := d.fetchHongguoCategoryPage(ctx, route, category)
-	return items, err
-}
-
 func (d *Downloader) fetchHongguoCategoryPage(ctx context.Context, route, category string) ([]Drama, int, error) {
 	body, err := d.fetchProviderText(ctx, hongguoBaseURL+"/category/"+route, hongguoBaseURL+"/")
 	if err != nil {
@@ -235,26 +230,18 @@ func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, video
 		return providerMedia{}, fmt.Errorf("红果未返回所请求的剧集，可能仅允许网页试看；请在站点确认该集的访问权限")
 	}
 	info, _ := page["video_player_info"].(map[string]any)
-	mediaURL := mapString(info, "main_url")
-	if !isProviderHTTPMediaURL(mediaURL) {
+	addresses := hongguoMediaAddresses(info)
+	if len(addresses) == 0 {
 		return providerMedia{}, fmt.Errorf("红果该集未提供公开播放地址，可能需要登录或 App 授权；不会将试看集冒充该集下载")
 	}
 	duration, _ := strconv.ParseFloat(mapString(info, "duration"), 64)
-	return providerMedia{URL: mediaURL, Referer: d.providerBaseURL(sourceHongguo) + "/", Duration: time.Duration(duration * float64(time.Second))}, nil
-}
-
-func hongguoCoverAddress(values ...string) string {
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || len(value) > 8192 {
-			continue
-		}
-		parsed, err := url.Parse(value)
-		if err == nil && validImageURL(parsed) {
-			return value
-		}
+	media := providerMedia{URL: addresses[0], Referer: d.providerBaseURL(sourceHongguo) + "/", Duration: time.Duration(duration * float64(time.Second))}
+	for _, address := range addresses {
+		variant := media
+		variant.URL, variant.Variants = address, nil
+		media.Variants = append(media.Variants, variant)
 	}
-	return ""
+	return media, nil
 }
 
 func hongguoDramaFromAny(v any, category string) Drama {
@@ -318,6 +305,7 @@ func nestedMap(v any, keys ...string) map[string]any {
 	}
 	return cur
 }
+
 func routerLoaderMap(data map[string]any, names ...string) map[string]any {
 	loader, _ := data["loaderData"].(map[string]any)
 	for _, name := range names {
@@ -349,12 +337,4 @@ func anyList(v any) []any {
 		}
 	}
 	return nil
-}
-
-func cloneValues(v url.Values) url.Values {
-	out := url.Values{}
-	for key, values := range v {
-		out[key] = append([]string(nil), values...)
-	}
-	return out
 }

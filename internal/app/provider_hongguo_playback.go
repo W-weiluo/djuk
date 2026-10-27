@@ -19,6 +19,7 @@ import (
 const hongguoPlaybackAPI = "https://djapi.999888456.xyz/api/hongguo/play"
 
 var hongguoNumericID = regexp.MustCompile(`^[0-9]{1,32}$`)
+
 var hongguoQualityNumber = regexp.MustCompile(`[0-9]+`)
 
 type hongguoPlaybackReference struct {

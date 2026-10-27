@@ -15,6 +15,7 @@ import (
 )
 
 type hongguoCommentKey struct{}
+
 type hongguoCommentNonce [11]byte
 
 func newHongguoCommentNonce() (hongguoCommentNonce, error) {

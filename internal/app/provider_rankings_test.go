@@ -133,7 +133,12 @@ func rankingTestDownloader(t *testing.T, transport rankingTransport) *Downloader
 	cfg := defaultConfig()
 	cfg.dataDir, cfg.OutputDir, cfg.ProxyURL, cfg.Retries = t.TempDir(), t.TempDir(), "direct", 1
 	d := NewDownloader(cfg)
-	d.client = &http.Client{Transport: transport}
+	d.client = &http.Client{Transport: rankingTransport(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Host == "log.snssdk.com" {
+			return hongguoFixtureDeviceRegister(request), nil
+		}
+		return transport(request)
+	})}
 	d.limiter = newRequestLimiter(8, time.Nanosecond)
 	return d
 }
