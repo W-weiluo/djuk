@@ -24,7 +24,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: chengquws/duanjuku
+          images: chengquws/wwwgreentrue
           tags: |
             latest
             type=sha,prefix=
