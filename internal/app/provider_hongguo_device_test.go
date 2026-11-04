@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -102,12 +103,44 @@ func TestHongguoRegisterFailurePausesAndKeepsOldDevice(t *testing.T) {
 	if got := *requests; len(got) != 3 || got[0] != "register" || got[1] != "detail@7" || got[2] != "detail@7" {
 		t.Fatal("registration was not paused after failure", got)
 	}
+	if err := d.ensureHongguoDevice(context.Background(), false, ""); err == nil || !strings.Contains(err.Error(), "未返回设备号") {
+		t.Fatal("paused registration hid the rejection reason", err)
+	}
+}
+
+func TestHongguoRegisterNetworkFailureRetriesNextRequest(t *testing.T) {
+	registers := 0
+	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path == "/service/2/device_register/" {
+			registers++
+			if registers == 1 {
+				return nil, errors.New("connection reset")
+			}
+			return sourceFixtureResponse(request, http.StatusOK, `{"device_id_str":"1001","install_id_str":"10019"}`), nil
+		}
+		return sourceFixtureResponse(request, http.StatusOK, `{"code":0,"data":{}}`), nil
+	})
+	client := d.hongguoClient()
+	client.state.DeviceID, client.state.InstallID, client.state.Registered = "7", "8", false
+	if err := d.ensureHongguoDevice(context.Background(), false, ""); err == nil {
+		t.Fatal("network failure registered a device")
+	}
+	if err := d.ensureHongguoDevice(context.Background(), false, ""); err != nil {
+		t.Fatal("network failure paused registration", err)
+	}
+	if state := d.hongguoCatalogSnapshot(); registers != 2 || state.DeviceID != "1001" || !state.Registered {
+		t.Fatal("registration was not retried", registers, state)
+	}
 }
 
 type sourceFixtureTransport func(*http.Request) (*http.Response, error)
 
 func (transport sourceFixtureTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	return transport(request)
+}
+
+func sourceFixtureResponse(request *http.Request, status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request}
 }
 
 func sourceFixtureDownloader(t *testing.T, transport sourceFixtureTransport) *Downloader {
@@ -120,11 +153,7 @@ func sourceFixtureDownloader(t *testing.T, transport sourceFixtureTransport) *Do
 
 func registerHongguoFixtureDevices(d *Downloader) {
 	state := &d.hongguoClient().state
-	state.Registered, state.HelperDeviceID, state.HelperInstallID = true, "424242", "4242429"
-}
-
-func sourceFixtureResponse(request *http.Request, status int, body string) *http.Response {
-	return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: request}
+	state.Registered, state.HelperRegistered, state.HelperDeviceID, state.HelperInstallID = true, true, "424242", "4242429"
 }
 
 func hongguoFixtureDeviceRegister(request *http.Request) *http.Response {
