@@ -31,6 +31,7 @@ func (d *Downloader) fetchAllDramas(ctx context.Context, sourceFilter string) ([
 		{name: sourceHuangguoAI, timeout: 2 * time.Minute, fn: d.fetchHuangguoAIDramas},
 		{name: sourceHuangguoVideo, timeout: 2 * time.Minute, fn: d.fetchHuangguoVideoDramas},
 		{name: sourceHuangdou, timeout: 2 * time.Minute, fn: d.fetchHuangdouDramas},
+		{name: sourceJinguo, timeout: 2 * time.Minute, fn: func(ctx context.Context) ([]Drama, error) { return d.fetchJinguoDramas(ctx, "", "") }},
 		{name: sourceHongguo, timeout: 2 * time.Minute, fn: d.fetchHongguoDramas},
 	}
 	selectedJobs := jobs[:0]

@@ -102,6 +102,8 @@ func (s *sourceProxyOverrides) proxy(request *http.Request) (*url.URL, error) {
 		raw = s.overrides["huangdou"]
 	case sourceHongguo:
 		raw = s.overrides["hongguo"]
+	case sourceJinguo:
+		raw = s.overrides["jinguo"]
 	}
 	if raw == "" {
 		// No per-source override; apply the fallback global proxy.

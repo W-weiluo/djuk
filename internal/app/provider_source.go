@@ -9,6 +9,7 @@ const (
 	sourceHuangguoVideo = "huangguo-video"
 	sourceHuangdou      = "huangdou"
 	sourceHongguo       = "hongguo"
+	sourceJinguo        = "jinguo"
 )
 
 type providerEpisode struct {
@@ -38,7 +39,7 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo:
+	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceJinguo:
 		return true
 	default:
 		return false
@@ -55,6 +56,8 @@ func canonicalProviderSource(source string) string {
 		return sourceHuangdou
 	case "hongguo", "hongguoduanju.com":
 		return sourceHongguo
+	case "jinguo", "9fu8e.com", "www.9fu8e.com", "jinguo1.net", "www.jinguo1.net", "jinguoduanju.app", "www.jinguoduanju.app", "play.jinguoduanju.app", "jgdj.app", "www.jgdj.app":
+		return sourceJinguo
 	default:
 		return strings.TrimSpace(source)
 	}

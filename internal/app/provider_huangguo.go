@@ -321,6 +321,9 @@ func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID s
 		return d.fetchHuangdouChapters(ctx, sourceID)
 	case sourceHongguo:
 		return d.fetchHongguoChapters(ctx, sourceID)
+	case sourceJinguo:
+		drama, chapters, err := d.fetchJinguoDetail(ctx, sourceID)
+		return drama.Title, chapters, err
 	default:
 		return "", nil, fmt.Errorf("unsupported provider source: %s", source)
 	}
