@@ -102,6 +102,8 @@ func (s *sourceProxyOverrides) proxy(request *http.Request) (*url.URL, error) {
 		raw = s.overrides["huangdou"]
 	case sourceHongguo:
 		raw = s.overrides["hongguo"]
+	case sourceJinguoDuanju:
+		raw = s.overrides["jinguoduanju"]
 	case sourceJinguo:
 		raw = s.overrides["jinguo"]
 	}

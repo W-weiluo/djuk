@@ -2,338 +2,267 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
 const (
-	jinguoHomeCategory = "home"
-	jinguoHeatCategory = "heat"
-	jinguoPageSize     = 24
+	jinguoChooseCategory = "choose"
+	jinguoNewCategory    = "new"
+	jinguoTabPrefix      = "tab:"
 )
+
+var jinguoID = regexp.MustCompile(`^[A-Za-z0-9]{1,64}$`)
+
+type jinguoRow struct {
+	Drama
+}
+
+func (row *jinguoRow) UnmarshalJSON(body []byte) error {
+	var detail detailResponse
+	var names struct {
+		TagNames []any `json:"tagNames"`
+	}
+	if err := json.Unmarshal(body, &detail); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(body, &names); err != nil {
+		return err
+	}
+	row.Drama = detail.Drama
+	row.Drama.Tags = mapStringSlice(map[string]any{"tagNames": names.TagNames}, "tagNames")
+	return nil
+}
+
+type jinguoChapter struct {
+	Chapter
+	CanPlay *bool `json:"canPlay"`
+}
 
 func validJinguoCategory(category string) bool {
 	switch category {
-	case "", jinguoHomeCategory, jinguoHeatCategory:
+	case "", jinguoChooseCategory, jinguoNewCategory:
 		return true
 	}
-	kind, id, ok := strings.Cut(category, ":")
-	return ok && (kind == "nav" || kind == "tag") && webProviderNumericID.MatchString(id)
+	id, ok := strings.CutPrefix(category, jinguoTabPrefix)
+	return ok && jinguoID.MatchString(id)
 }
 
-func jinguoActive(row map[string]any, key string) bool {
-	value, ok := row[key]
-	if !ok || value == nil {
-		return true
+func (d *Downloader) fetchJinguoTabs(ctx context.Context) ([]Tab, error) {
+	var tabs legacyTabList
+	if err := d.jinguoClient().get(ctx, "/api/app/playlet-tab/all", nil, &tabs); err != nil {
+		return nil, err
 	}
-	flag, isBool := value.(bool)
-	return isBool && flag
+	var valid []Tab
+	for _, tab := range tabs {
+		tab.Name = strings.TrimSpace(tab.Name)
+		if jinguoID.MatchString(tab.ID) && tab.Name != "" {
+			valid = append(valid, tab)
+		}
+	}
+	if len(valid) == 0 {
+		return nil, errors.New("禁果未返回可用分类")
+	}
+	return valid, nil
 }
 
 func (d *Downloader) fetchJinguoCategories(ctx context.Context) ([]nativeCategory, error) {
-	client := d.jinguoClient()
-	navigation, err := client.get(ctx, "/top-navigation", nil, 1<<20)
+	tabs, err := d.fetchJinguoTabs(ctx)
 	if err != nil {
 		return nil, err
 	}
-	filters, filterErr := client.get(ctx, "/filter-config", nil, 1<<20)
-	rows, valid := navigation.([]any)
-	if !valid || len(rows) > 200 {
-		return nil, errors.New("禁果分类数据格式无效")
-	}
-	categories := []nativeCategory{{ID: jinguoHomeCategory, Name: "推荐"}, {ID: jinguoHeatCategory, Name: "热度"}}
-	seenID := map[string]bool{jinguoHomeCategory: true, jinguoHeatCategory: true}
-	seenName := map[string]bool{"推荐": true, "热度": true, "全部": true}
-	add := func(id, name string) {
-		name = strings.TrimSpace(name)
-		if len(categories) >= 64 || !validJinguoCategory(id) || name == "" || len([]rune(name)) > 24 || seenID[id] || seenName[name] {
-			return
-		}
-		seenID[id] = true
-		seenName[name] = true
-		categories = append(categories, nativeCategory{ID: id, Name: name})
-	}
-	for _, value := range rows {
-		row, _ := value.(map[string]any)
-		if !jinguoActive(row, "active") || !jinguoActive(row, "valid") {
-			continue
-		}
-		id := mapString(row, "id")
-		if !webProviderNumericID.MatchString(id) {
-			continue
-		}
-		add("nav:"+id, mapString(row, "frontendName"))
-	}
-	if filterErr == nil {
-		groups, _ := filters.([]any)
-		if len(groups) > 80 {
-			return nil, errors.New("禁果分类数据格式无效")
-		}
-		for _, value := range groups {
-			group, _ := value.(map[string]any)
-			if !jinguoActive(group, "active") || !jinguoActive(group, "frontendVisible") {
-				continue
-			}
-			tags, _ := group["tags"].([]any)
-			if len(tags) > 300 {
-				return nil, errors.New("禁果分类条目过多")
-			}
-			for _, tagValue := range tags {
-				tag, _ := tagValue.(map[string]any)
-				if !jinguoActive(tag, "active") || !jinguoActive(tag, "frontendVisible") {
-					continue
-				}
-				id := mapString(tag, "id")
-				if !webProviderNumericID.MatchString(id) {
-					continue
-				}
-				add("tag:"+id, mapString(tag, "name"))
-			}
-		}
+	categories := []nativeCategory{{ID: jinguoChooseCategory, Name: "精选"}, {ID: jinguoNewCategory, Name: "最新"}}
+	for _, tab := range tabs {
+		categories = append(categories, nativeCategory{ID: jinguoTabPrefix + tab.ID, Name: tab.Name})
 	}
 	return categories, nil
 }
 
-func jinguoCatalogQuery(category, query string) (url.Values, error) {
+func (d *Downloader) fetchJinguoCatalogPage(ctx context.Context, page int, category, query string) ([]Drama, bool, error) {
 	query = strings.TrimSpace(query)
 	if !validJinguoCategory(category) || len(query) > 256 {
-		return nil, errors.New("禁果目录查询参数无效")
+		return nil, false, errors.New("禁果目录查询参数无效")
 	}
-	values := url.Values{"sort": {"latest"}}
-	if query != "" {
-		values.Set("q", query)
-		return values, nil
+	params := map[string]string{"pageNumber": strconv.Itoa(max(1, page)), "pageSize": strconv.Itoa(max(1, d.cfg.PageSize))}
+	switch {
+	case query != "":
+		params["keyword"] = query
+		return d.fetchJinguoList(ctx, "/api/app/playlet/keyword/search", params, "")
+	case category == jinguoChooseCategory:
+		return d.fetchJinguoList(ctx, "/api/app/playlet-recommend/home/choose", params, "")
+	case category == jinguoNewCategory:
+		return d.fetchJinguoList(ctx, "/api/app/playlet-recommend/home/new", params, "")
 	}
-	switch category {
-	case jinguoHomeCategory:
-		values.Set("displayArea", "HOME_FEED")
-	case jinguoHeatCategory:
-		values.Set("sort", "heat")
-	default:
-		kind, id, _ := strings.Cut(category, ":")
-		switch kind {
-		case "nav":
-			values.Set("navigationId", id)
-		case "tag":
-			values.Set("tags", id)
-		}
-	}
-	return values, nil
-}
-
-func jinguoDramaFromMap(row map[string]any, site, sourceID string) (Drama, error) {
-	id, title := mapString(row, "id"), strings.TrimSpace(mapString(row, "title"))
-	if !webProviderNumericID.MatchString(id) || title == "" {
-		return Drama{}, errors.New("禁果剧集资料不完整")
-	}
-	if sourceID != "" && sourceID != id {
-		return Drama{}, errors.New("禁果详情与请求剧集不符")
-	}
-	episodes, _ := webProviderInteger(row["episodeCount"], 100000)
-	var tags []string
-	seenTags := map[string]bool{}
-	if values, valid := row["tags"].([]any); valid {
-		for _, value := range values {
-			tag := strings.TrimSpace(nativeText(value))
-			if tag == "" || len([]rune(tag)) > 24 || seenTags[tag] || len(tags) >= 32 {
-				continue
-			}
-			seenTags[tag] = true
-			tags = append(tags, tag)
-		}
-	}
-	description := truncate(firstNonEmpty(mapString(row, "description"), mapString(row, "subtitle")), 12000)
-	cover := providerCoverAddress(firstPresent(row, "coverUrl", "cover"), site+"/")
-	drama := Drama{ID: providerDramaID(sourceJinguo, id), Source: sourceJinguo, SourceID: id,
-		Title: truncate(title, 512), Name: truncate(title, 512), Desc: description, Intro: description,
-		Cover: cover, CoverURL: cover, EpisodeCount: episodes, TotalEpisode: episodes,
-		CategoryName: firstNonEmpty(firstTag(tags), "短剧"), ChannelName: "禁果", Tags: tags,
-		OnlineDate: providerReleaseDate(mapString(row, "publishedAt"))}
-	if heat, valid := webProviderInteger(row["heat"], 1000000000); valid && heat > 0 {
-		drama.Heat = strconv.Itoa(heat)
-	}
-	switch strings.ToUpper(mapString(row, "filmType")) {
-	case "FREE":
-		vip := false
-		drama.VIP = &vip
-	case "":
-	default:
-		vip := true
-		drama.VIP = &vip
-	}
-	return drama, nil
-}
-
-func firstTag(tags []string) string {
-	if len(tags) == 0 {
-		return ""
-	}
-	return tags[0]
-}
-
-func jinguoDramaRows(value any) ([]any, error) {
-	switch data := value.(type) {
-	case []any:
-		if len(data) > 20000 {
-			return nil, errors.New("禁果目录格式无效")
-		}
-		return data, nil
-	case map[string]any:
-		for _, key := range []string{"dramas", "list", "items", "records"} {
-			if rows, valid := data[key].([]any); valid {
-				if len(rows) > 20000 {
-					return nil, errors.New("禁果目录格式无效")
-				}
-				return rows, nil
-			}
-		}
-	}
-	return nil, errors.New("禁果目录格式无效")
-}
-
-func (d *Downloader) fetchJinguoDramas(ctx context.Context, category, query string) ([]Drama, error) {
-	values, err := jinguoCatalogQuery(category, query)
-	if err != nil {
-		return nil, err
-	}
-	client := d.jinguoClient()
-	decoded, err := client.get(ctx, "/dramas", values, 8<<20)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := jinguoDramaRows(decoded)
-	if err != nil {
-		return nil, err
-	}
-	items := make([]Drama, 0, len(rows))
-	seen := map[string]bool{}
-	for _, value := range rows {
-		row, _ := value.(map[string]any)
-		drama, err := jinguoDramaFromMap(row, client.siteURL(), "")
-		if err != nil {
-			return nil, err
-		}
-		if seen[drama.ID] {
-			return nil, errors.New("禁果目录包含重复剧集")
-		}
-		seen[drama.ID] = true
-		items = append(items, drama)
-	}
-	return items, nil
-}
-
-func jinguoPage(items []Drama, page int) ([]Drama, bool, error) {
-	if page < 1 || page > 1000000 {
-		return nil, false, errors.New("禁果目录页码无效")
-	}
-	start := (page - 1) * jinguoPageSize
-	if start >= len(items) {
-		return []Drama{}, false, nil
-	}
-	end := min(start+jinguoPageSize, len(items))
-	pageItems := append([]Drama(nil), items[start:end]...)
-	return pageItems, end < len(items), nil
-}
-
-func (d *Downloader) fetchJinguoCatalogPage(ctx context.Context, page int, category, query string) ([]Drama, bool, error) {
-	items, err := d.fetchJinguoDramas(ctx, category, query)
+	tabs, err := d.fetchJinguoTabs(ctx)
 	if err != nil {
 		return nil, false, err
 	}
-	return jinguoPage(items, page)
+	params["tabSortType"] = "1"
+	selected := strings.TrimPrefix(category, jinguoTabPrefix)
+	seen := map[string]bool{}
+	var items []Drama
+	var failures []error
+	found, hasMore := false, false
+	for _, tab := range tabs {
+		if category != "" && tab.ID != selected {
+			continue
+		}
+		found = true
+		list, more, err := d.fetchJinguoList(ctx, "/api/app/playlet/home/tab/"+url.PathEscape(tab.ID), params, tab.Name)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", tab.Name, err))
+			hasMore = true
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		hasMore = hasMore || more
+		for _, drama := range list {
+			if !seen[drama.ID] {
+				seen[drama.ID] = true
+				items = append(items, drama)
+			}
+		}
+	}
+	if !found {
+		return nil, false, errors.New("此分类已调整，请刷新分类列表")
+	}
+	return items, hasMore, errors.Join(failures...)
 }
 
-func jinguoChapters(site, sourceID string, rows []any) ([]Chapter, error) {
-	if len(rows) > 10000 {
-		return nil, errors.New("禁果分集目录格式无效")
+func (d *Downloader) fetchJinguoList(ctx context.Context, route string, params map[string]string, tabName string) ([]Drama, bool, error) {
+	var result struct {
+		List []jinguoRow `json:"list"`
 	}
-	chapters := make([]Chapter, 0, len(rows))
-	seenIDs, seenNumbers := map[string]bool{}, map[int]bool{}
-	for _, value := range rows {
-		row, _ := value.(map[string]any)
-		id := mapString(row, "id")
-		number, valid := webProviderInteger(row["number"], 100000)
-		if !webProviderNumericID.MatchString(id) || !valid || number < 1 || seenIDs[id] || seenNumbers[number] {
-			return nil, errors.New("禁果分集编号无效或重复，请刷新详情")
+	if err := d.jinguoClient().get(ctx, route, params, &result); err != nil {
+		return nil, false, err
+	}
+	var items []Drama
+	for _, row := range result.List {
+		if drama, ok := jinguoDrama(row.Drama, tabName); ok {
+			items = append(items, drama)
 		}
-		seenIDs[id], seenNumbers[number] = true, true
-		title := firstNonEmpty(mapString(row, "title"), fmt.Sprintf("第%d集", number))
-		locked, _ := row["locked"].(bool)
-		chapters = append(chapters, Chapter{ID: providerChapterID(sourceJinguo, sourceID, id), Source: sourceJinguo,
-			Title: truncate(title, 256), CurrentEpisode: rawEpisode(number), VideoURL: "jinguo-play://" + id,
-			Referer: site + "/", VIP: locked})
 	}
-	return chapters, nil
+	return items, len(result.List) >= max(1, d.cfg.PageSize), nil
+}
+
+func jinguoDrama(drama Drama, tabName string) (Drama, bool) {
+	if !jinguoID.MatchString(drama.ID) {
+		return Drama{}, false
+	}
+	drama.SourceID, drama.Source = drama.ID, sourceJinguo
+	drama.ID = providerDramaID(sourceJinguo, drama.SourceID)
+	drama.ChannelName = "禁果"
+	drama.CategoryName = firstNonEmpty(drama.CategoryName, tabName)
+	covers := []any{drama.Cover, drama.CoverURL, drama.CoverURLSnake, drama.Image, drama.ImageURL, drama.ImageURLSnake, drama.Img, drama.Pic, drama.Picture, drama.Poster, drama.Thumb, drama.Thumbnail}
+	drama.Cover, drama.CoverURL = nil, nil
+	for _, cover := range covers {
+		if address := legacyCoverURL(cover); address != "" {
+			drama.Cover, drama.CoverURL = address, address
+			break
+		}
+	}
+	return drama, true
 }
 
 func (d *Downloader) fetchJinguoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
-	if !webProviderNumericID.MatchString(sourceID) {
-		return Drama{}, nil, errors.New("禁果剧集 ID 无效")
+	if !jinguoID.MatchString(sourceID) {
+		return Drama{}, nil, errors.New("无效的禁果剧集 ID")
 	}
 	client := d.jinguoClient()
-	decoded, err := client.get(ctx, "/dramas/"+url.PathEscape(sourceID), nil, 4<<20)
-	if err != nil {
+	var raw json.RawMessage
+	if err := client.get(ctx, "/api/app/playlet/detail/"+url.PathEscape(sourceID), nil, &raw); err != nil {
 		return Drama{}, nil, err
 	}
-	object, _ := decoded.(map[string]any)
-	row, _ := object["drama"].(map[string]any)
-	if row == nil {
-		row = object
+	var detail jinguoRow
+	var playable struct {
+		Chapters []jinguoChapter `json:"chapters"`
 	}
-	if description := mapString(object, "description"); description != "" && mapString(row, "description") == "" {
-		row["description"] = description
+	if json.Unmarshal(raw, &detail) != nil || json.Unmarshal(raw, &playable) != nil {
+		return Drama{}, nil, errors.New("禁果详情数据格式无效")
 	}
-	drama, err := jinguoDramaFromMap(row, client.siteURL(), sourceID)
-	if err != nil {
-		return Drama{}, nil, err
+	drama, ok := jinguoDrama(detail.Drama, "")
+	if !ok || drama.SourceID != sourceID {
+		return Drama{}, nil, errors.New("禁果详情与请求剧集不符")
 	}
-	episodes, valid := object["episodes"].([]any)
-	if !valid {
-		return Drama{}, nil, errors.New("禁果分集目录格式无效")
-	}
-	chapters, err := jinguoChapters(client.siteURL(), sourceID, episodes)
-	if err != nil {
-		return Drama{}, nil, err
-	}
-	if count := len(chapters); count > 0 {
-		if listed, valid := webProviderInteger(drama.EpisodeCount, 100000); !valid || count > listed {
-			drama.EpisodeCount, drama.TotalEpisode = count, count
+	rows := playable.Chapters
+	if len(rows) == 0 {
+		if err := client.get(ctx, "/api/app/playlet-chapter/list/"+url.PathEscape(sourceID), nil, &rows); err != nil {
+			return Drama{}, nil, err
 		}
 	}
+	chapters := make([]Chapter, 0, len(rows))
+	for index, row := range rows {
+		chapter := row.Chapter
+		chapter.VIP = chapter.VideoURL == "" || row.CanPlay != nil && !*row.CanPlay
+		chapter.Source = sourceJinguo
+		chapter.ID = providerChapterID(sourceJinguo, sourceID, firstNonEmpty(chapter.ID, strconv.Itoa(index+1)))
+		if chapterEpisodeNumber(chapter, 0) <= 0 {
+			chapter.CurrentEpisode = rawEpisode(index + 1)
+		}
+		chapter.Title = firstNonEmpty(chapter.Title, "第"+chapter.EpisodeString(index+1)+"集")
+		chapters = append(chapters, chapter)
+	}
+	chapters = uniqueChapters(chapters)
+	sortProviderChapters(chapters)
 	return drama, chapters, nil
 }
 
-func (d *Downloader) resolveJinguoMedia(ctx context.Context, task Task) (providerMedia, error) {
-	source, sourceID, valid := splitProviderDramaID(task.DramaID)
-	prefix := providerChapterID(sourceJinguo, sourceID, "")
-	if !valid || source != sourceJinguo || !webProviderNumericID.MatchString(sourceID) || !strings.HasPrefix(task.Chapter.ID, prefix) {
-		return providerMedia{}, errors.New("禁果播放分集信息无效，请刷新详情")
+func jinguoPlaylistPath(videoURL string) (string, bool) {
+	videoURL = strings.Trim(strings.TrimSpace(videoURL), "/")
+	if videoURL == "" || strings.ContainsAny(videoURL, "?#\\") || strings.Contains(videoURL, "://") {
+		return "", false
 	}
-	episodeID := strings.TrimPrefix(task.Chapter.ID, prefix)
-	if !webProviderNumericID.MatchString(episodeID) {
-		return providerMedia{}, errors.New("禁果播放分集 ID 无效")
+	segments := strings.Split(videoURL, "/")
+	for index, segment := range segments {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", false
+		}
+		segments[index] = url.PathEscape(segment)
+	}
+	return strings.Join(segments, "/"), true
+}
+
+func (d *Downloader) resolveJinguoMedia(ctx context.Context, task Task) (providerMedia, error) {
+	if strings.TrimSpace(task.Chapter.VideoURL) == "" {
+		return providerMedia{}, errors.New("禁果该集需要金币或会员解锁后才能播放")
+	}
+	path, ok := jinguoPlaylistPath(task.Chapter.VideoURL)
+	if !ok {
+		return providerMedia{}, errors.New("禁果分集播放地址无效")
 	}
 	client := d.jinguoClient()
-	decoded, err := client.get(ctx, "/episodes/"+url.PathEscape(episodeID)+"/play", nil, 256<<10)
-	if err != nil {
-		return providerMedia{}, err
-	}
-	row, _ := decoded.(map[string]any)
-	if id := mapString(row, "episodeId"); id != "" && id != episodeID {
-		return providerMedia{}, errors.New("禁果返回的播放地址与请求分集不符")
-	}
-	if allowance, valid := row["allowance"].(map[string]any); valid {
-		if allowed, isBool := allowance["allowed"].(bool); isBool && !allowed {
-			return providerMedia{}, errors.New("禁果该集需要会员或解锁后才能播放")
+	for attempt := 0; attempt < 2; attempt++ {
+		token, _, err := client.credentials(ctx)
+		if err != nil {
+			return providerMedia{}, err
 		}
+		var lastErr error
+		expired := false
+		for _, base := range client.bases() {
+			referer := base + "/"
+			address := base + "/api/app/vid/h5/m3u8/" + path + "?" + url.Values{"token": {token}}.Encode()
+			playlist, finalURL, err := d.fetchMediaPlaylist(ctx, address, referer)
+			if err == nil {
+				client.rememberBase(base)
+				return providerMedia{URL: finalURL, Playlist: playlist, Referer: referer, Duration: m3u8Duration(playlist)}, nil
+			}
+			lastErr = err
+			if expired = jinguoSessionExpired(err); expired || ctx.Err() != nil {
+				break
+			}
+		}
+		if attempt == 0 && expired {
+			client.invalidate(token)
+			continue
+		}
+		return providerMedia{}, lastErr
 	}
-	referer := client.siteURL() + "/"
-	address := normalizeProviderMediaURL(referer, mapString(row, "videoUrl"))
-	if !isProviderHTTPMediaURL(address) {
-		return providerMedia{}, errors.New("禁果未提供该集播放地址，请确认是否需要会员或解锁")
-	}
-	return d.prepareWebProviderMedia(ctx, providerMedia{URL: address, Referer: referer}, "禁果")
+	return providerMedia{}, errors.New("禁果播放会话已失效，请稍后重试")
 }

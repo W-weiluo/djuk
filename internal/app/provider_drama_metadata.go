@@ -15,15 +15,12 @@ func (d *Downloader) fetchDramaMetadata(ctx context.Context, drama Drama) (Drama
 	switch source {
 	case sourceHongguo:
 		return d.fetchHongguoDramaMetadata(ctx, drama, id)
+	case sourceJinguoDuanju:
+		drama, _, err := d.fetchJinguoDuanjuDetail(ctx, id)
+		return drama, err
 	case sourceJinguo:
-		drama, chapters, err := d.fetchJinguoDetail(ctx, id)
-		if err != nil {
-			return Drama{}, err
-		}
-		if len(chapters) > 0 {
-			drama.EpisodeCount, drama.TotalEpisode = len(chapters), len(chapters)
-		}
-		return drama, nil
+		drama, _, err := d.fetchJinguoDetail(ctx, id)
+		return drama, err
 	case sourceHuangdou:
 		row, err := d.huangdouDetail(ctx, id)
 		if err != nil {

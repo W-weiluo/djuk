@@ -3,33 +3,43 @@ package app
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	jinguoBaseURL   = "https://jinguoduanju.app"
-	jinguoUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+	jinguoSessionFile = "jinguo-session.json"
+	jinguoXUserAgent  = "BuildID=com.hgaidj.ozThree;SysType=android;DevID=%s;Ver=1.0.8;DevType=Android;DeviceBrand=google;DeviceModel=Pixel;SystemName=Android;SystemVersion=14;Terminal=1;IsH5=1;Sid=00000000000000000000000000000"
 )
 
 var (
-	errJinguoAuthExpired = errors.New("禁果访问授权已失效，请重试")
-	jinguoContentHosts   = []string{
-		"jinguoduanju.app",
-		"www.jinguoduanju.app",
-		"play.jinguoduanju.app",
-		"jgdj.app",
-		"www.jgdj.app",
-	}
+	jinguoAPIHosts       = []string{"https://d1wyuxwdrlykj1.cloudfront.net", "https://hghts.rlkfus.cn"}
+	jinguoProtocol       = legacyProtocol{InterfaceKey: "65dc07d1b7915c6b2937432b091837a7", ParamKey: "BxJand%xf5h3sycH", ParamIV: "BxJand%xf5h3sycH"}
+	jinguoDeviceIDFormat = regexp.MustCompile(`^[A-F0-9]{16}[0-9]{13}$`)
 )
+
+type jinguoAPIError struct{ code, message string }
+
+func (err *jinguoAPIError) Error() string {
+	return fmt.Sprintf("禁果接口返回错误 %s：%s", err.code, err.message)
+}
+
+type jinguoSession struct {
+	Version  int    `json:"version"`
+	DeviceID string `json:"deviceId"`
+	Token    string `json:"token"`
+}
 
 type jinguoAuthCall struct {
 	done  chan struct{}
@@ -40,296 +50,276 @@ type jinguoAuthCall struct {
 type jinguoAPIClient struct {
 	downloader *Downloader
 	mu         sync.Mutex
+	loaded     bool
 	base       string
-	site       string
-	deviceID   string
-	token      string
+	session    jinguoSession
 	pending    *jinguoAuthCall
 }
 
-type jinguoStatusError struct {
-	message string
-}
-
-func (err *jinguoStatusError) Error() string { return err.message }
-
 func (d *Downloader) jinguoClient() *jinguoAPIClient {
-	d.jinguoOnce.Do(func() {
-		d.jinguo = &jinguoAPIClient{downloader: d}
-	})
+	d.jinguoOnce.Do(func() { d.jinguo = &jinguoAPIClient{downloader: d} })
 	return d.jinguo
 }
 
-func (client *jinguoAPIClient) siteURL() string {
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	if client.site != "" {
-		return client.site
+func (client *jinguoAPIClient) loadSession() {
+	client.loaded = true
+	client.session = jinguoSession{Version: 1}
+	file, err := os.Open(filepath.Join(client.downloader.cfg.dataDir, jinguoSessionFile))
+	if err != nil {
+		return
 	}
-	if site := jinguoContentSite(client.downloader.cfg.JinguoURL); site != "" {
-		return site
+	defer file.Close()
+	var stored jinguoSession
+	if json.NewDecoder(io.LimitReader(file, 16*1024)).Decode(&stored) != nil || stored.Version != 1 ||
+		!jinguoDeviceIDFormat.MatchString(stored.DeviceID) || !validLegacyToken(stored.Token) {
+		return
 	}
-	return jinguoBaseURL
+	client.session = stored
 }
 
-func jinguoContentSite(raw string) string {
-	address, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || address.Scheme != "https" || address.User != nil || address.RawQuery != "" || address.Fragment != "" || address.Hostname() == "" {
-		return ""
+func (client *jinguoAPIClient) saveSession(session jinguoSession) error {
+	directory := client.downloader.cfg.dataDir
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
 	}
-	if path := strings.Trim(address.EscapedPath(), "/"); path != "" {
-		return ""
+	file, err := os.CreateTemp(directory, ".jinguo-session-*.tmp")
+	if err != nil {
+		return err
 	}
-	host := strings.ToLower(address.Hostname())
-	for _, known := range jinguoContentHosts {
-		if host == known {
-			return "https://" + host
-		}
+	defer os.Remove(file.Name())
+	if err := json.NewEncoder(file).Encode(session); err != nil {
+		file.Close()
+		return err
 	}
-	return ""
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), filepath.Join(directory, jinguoSessionFile))
 }
 
-func jinguoOrigin(apiBase string) string {
-	parsed, err := url.Parse(apiBase)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return ""
-	}
-	return parsed.Scheme + "://" + parsed.Host
-}
-
-func (client *jinguoAPIClient) candidates() []string {
-	client.mu.Lock()
-	pinned := client.base
-	client.mu.Unlock()
-	if pinned != "" {
-		return []string{pinned}
-	}
-	var sites []string
-	add := func(site string) {
-		if site == "" {
-			return
-		}
-		for _, existing := range sites {
-			if existing == site {
-				return
-			}
-		}
-		sites = append(sites, site)
-	}
-	add(jinguoContentSite(client.downloader.cfg.JinguoURL))
-	add(jinguoBaseURL)
-	add("https://jgdj.app")
-	add("https://play.jinguoduanju.app")
-	bases := make([]string, 0, len(sites))
-	for _, site := range sites {
-		bases = append(bases, site+"/api/v1")
-	}
-	return bases
-}
-
-func (client *jinguoAPIClient) accessToken(ctx context.Context) (string, error) {
+func (client *jinguoAPIClient) credentials(ctx context.Context) (string, string, error) {
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return "", "", err
 	}
 	client.mu.Lock()
-	if client.token != "" {
-		token := client.token
+	if !client.loaded {
+		client.loadSession()
+	}
+	if client.session.DeviceID == "" {
+		prefix := strings.ToUpper(randomHex(8))
+		if prefix == "" {
+			client.mu.Unlock()
+			return "", "", errors.New("无法生成禁果访客标识")
+		}
+		client.session.DeviceID = prefix + strconv.FormatInt(time.Now().UnixMilli(), 10)
+	}
+	deviceID := client.session.DeviceID
+	if token := client.session.Token; token != "" {
 		client.mu.Unlock()
-		return token, nil
+		return token, deviceID, nil
 	}
 	if pending := client.pending; pending != nil {
 		client.mu.Unlock()
 		select {
 		case <-pending.done:
 			if (errors.Is(pending.err, context.Canceled) || errors.Is(pending.err, context.DeadlineExceeded)) && ctx.Err() == nil {
-				return client.accessToken(ctx)
+				return client.credentials(ctx)
 			}
-			return pending.token, pending.err
+			return pending.token, deviceID, pending.err
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", "", ctx.Err()
 		}
 	}
-	if client.deviceID == "" {
-		var identifier [16]byte
-		if _, err := rand.Read(identifier[:]); err != nil {
-			client.mu.Unlock()
-			return "", errors.New("无法初始化禁果访问会话")
-		}
-		identifier[6] = identifier[6]&0x0f | 0x40
-		identifier[8] = identifier[8]&0x3f | 0x80
-		client.deviceID = fmt.Sprintf("%x-%x-%x-%x-%x", identifier[0:4], identifier[4:6], identifier[6:8], identifier[8:10], identifier[10:])
-	}
-	deviceID := client.deviceID
 	pending := &jinguoAuthCall{done: make(chan struct{})}
 	client.pending = pending
 	client.mu.Unlock()
 
-	body, _ := json.Marshal(map[string]string{"deviceId": "h5:" + deviceID, "channelCode": "", "attributionToken": ""})
-	decoded, err := client.request(ctx, http.MethodPost, "/auth/device", nil, body, "", false, 64<<10)
-	token := ""
-	if err == nil {
-		row, _ := decoded.(map[string]any)
-		token = mapString(row, "token")
-		if token == "" || len(token) > 8192 || strings.IndexFunc(token, func(r rune) bool { return r <= 32 || r >= 127 }) >= 0 {
-			token = ""
-			err = errors.New("禁果未返回有效的访问授权")
-		}
-	}
+	token, err := client.login(ctx, deviceID)
 	client.mu.Lock()
 	if err == nil {
-		client.token = token
+		client.session.Token = token
+		if saveErr := client.saveSession(client.session); saveErr != nil {
+			fmt.Println("禁果访客会话未能保存，本次会话仍可使用")
+		}
 	}
 	pending.token, pending.err = token, err
 	client.pending = nil
 	close(pending.done)
 	client.mu.Unlock()
-	return token, err
+	return token, deviceID, err
 }
 
-func (client *jinguoAPIClient) get(ctx context.Context, route string, query url.Values, limit int64) (any, error) {
+func (client *jinguoAPIClient) login(ctx context.Context, deviceID string) (string, error) {
+	payload, err := client.request(ctx, http.MethodPost, "/api/app/mine/login/h5", map[string]any{
+		"devID": deviceID, "sysType": "ios", "isAppStore": false,
+	}, "", deviceID)
+	if err != nil {
+		return "", fmt.Errorf("禁果访客登录失败：%w", err)
+	}
+	var login struct {
+		Token string `json:"token"`
+	}
+	if json.Unmarshal(payload, &login) != nil || login.Token == "" || !validLegacyToken(login.Token) {
+		return "", errors.New("禁果访客登录未返回有效令牌")
+	}
+	return login.Token, nil
+}
+
+func (client *jinguoAPIClient) invalidate(token string) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.session.Token == token {
+		client.session.Token = ""
+	}
+}
+
+func jinguoSessionExpired(err error) bool {
+	var apiErr *jinguoAPIError
+	var mediaErr *legacyAPIError
+	return errors.As(err, &apiErr) && apiErr.code == "5005" || errors.As(err, &mediaErr) && mediaErr.code == "5005"
+}
+
+func (client *jinguoAPIClient) get(ctx context.Context, apiPath string, params any, out any) error {
 	for attempt := 0; attempt < 2; attempt++ {
-		token, err := client.accessToken(ctx)
+		token, deviceID, err := client.credentials(ctx)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		decoded, err := client.request(ctx, http.MethodGet, route, query, nil, token, attempt == 0, limit)
-		if attempt == 0 && errors.Is(err, errJinguoAuthExpired) {
-			client.mu.Lock()
-			if client.token == token {
-				client.token = ""
-			}
-			client.mu.Unlock()
+		payload, err := client.request(ctx, http.MethodGet, apiPath, params, token, deviceID)
+		if attempt == 0 && jinguoSessionExpired(err) {
+			client.invalidate(token)
 			continue
 		}
-		return decoded, err
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(payload, out); err != nil {
+			return errors.New("禁果返回的数据格式无效")
+		}
+		return nil
 	}
-	return nil, errJinguoAuthExpired
+	return errors.New("禁果访客登录已失效，请稍后重试")
 }
 
-func (client *jinguoAPIClient) request(ctx context.Context, method, route string, query url.Values, body []byte, token string, retryAuth bool, limit int64) (any, error) {
-	var lastErr error
-	for _, base := range client.candidates() {
-		decoded, err := client.requestBase(ctx, base, method, route, query, body, token, retryAuth, limit)
-		if err == nil || errors.Is(err, errJinguoAuthExpired) || jinguoStatus(err) {
-			if err == nil {
-				client.rememberBase(base)
-			}
-			return decoded, err
-		}
-		lastErr = err
-		if ctx.Err() != nil {
-			return nil, err
+func (client *jinguoAPIClient) bases() []string {
+	client.mu.Lock()
+	pinned := client.base
+	client.mu.Unlock()
+	bases := []string{}
+	if pinned != "" {
+		bases = append(bases, pinned)
+	}
+	for _, base := range jinguoAPIHosts {
+		if base != pinned {
+			bases = append(bases, base)
 		}
 	}
-	if lastErr == nil {
-		lastErr = errors.New("禁果线路暂不可用，请稍后重试")
-	}
-	return nil, lastErr
-}
-
-func jinguoStatus(err error) bool {
-	var status *jinguoStatusError
-	return errors.As(err, &status)
+	return bases
 }
 
 func (client *jinguoAPIClient) rememberBase(base string) {
 	client.mu.Lock()
-	defer client.mu.Unlock()
 	client.base = base
-	if origin := jinguoOrigin(base); origin != "" {
-		client.site = origin
-	}
+	client.mu.Unlock()
 }
 
-func (client *jinguoAPIClient) requestBase(ctx context.Context, base, method, route string, query url.Values, body []byte, token string, retryAuth bool, limit int64) (any, error) {
-	parsed, err := url.Parse(base)
-	if err != nil || !isProviderHTTPMediaURL(base) || parsed.User != nil {
-		return nil, errors.New("禁果接口地址无效")
-	}
-	timeout := 15 * time.Second
-	if background, _ := ctx.Value(backgroundCatalogKey{}).(bool); background {
-		timeout = 8 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	address := strings.TrimRight(base, "/") + route
-	if len(query) > 0 {
-		address += "?" + query.Encode()
-	}
-	request, err := http.NewRequestWithContext(ctx, method, address, bytes.NewReader(body))
-	if err != nil {
-		return nil, errors.New("无法创建禁果请求")
-	}
-	request.Header.Set("User-Agent", jinguoUserAgent)
-	request.Header.Set("Accept", "application/json, text/plain, */*")
-	request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
-	request.Header.Set("Referer", client.siteURL()+"/")
-	request.Header.Set("Origin", client.siteURL())
-	if len(body) > 0 {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	if token != "" {
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
-	d := client.downloader
-	if d.limiter != nil {
-		release, err := d.limiter.acquire(ctx, request)
+type jinguoLineError struct{ err error }
+
+func (err *jinguoLineError) Error() string { return err.err.Error() }
+func (err *jinguoLineError) Unwrap() error { return err.err }
+
+func (client *jinguoAPIClient) request(ctx context.Context, method, apiPath string, params any, token, deviceID string) ([]byte, error) {
+	var query string
+	var body []byte
+	if params != nil {
+		encrypted, err := encryptParam(params, []byte(jinguoProtocol.ParamKey), []byte(jinguoProtocol.ParamIV))
 		if err != nil {
 			return nil, err
 		}
-		defer release()
-	}
-	transport := *d.client
-	transport.Jar = nil
-	previousRedirect := transport.CheckRedirect
-	transport.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		if len(via) >= 5 || !strings.EqualFold(next.URL.Host, parsed.Host) {
-			return errors.New("禁果接口重定向地址异常")
+		if method == http.MethodGet {
+			query = "?data=" + url.QueryEscape(encrypted)
+		} else {
+			body, _ = json.Marshal(map[string]string{"data": encrypted})
 		}
-		if previousRedirect != nil {
-			return previousRedirect(next, via)
+	}
+	var lastErr error
+	for _, base := range client.bases() {
+		payload, err := client.requestBase(ctx, base, method, apiPath+query, body, token, deviceID)
+		var lineErr *jinguoLineError
+		if !errors.As(err, &lineErr) {
+			if err == nil {
+				client.rememberBase(base)
+			}
+			return payload, err
 		}
-		return nil
-	}
-	response, err := transport.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("禁果连接失败：%w", publicError(err))
-	}
-	defer response.Body.Close()
-	data, readErr := io.ReadAll(io.LimitReader(response.Body, limit+1))
-	blocked := catalogResponseBlockReason(response, data) != ""
-	if retryAuth && token != "" && response.StatusCode == http.StatusUnauthorized && readErr == nil && int64(len(data)) <= limit && !blocked {
-		return nil, errJinguoAuthExpired
-	}
-	if d.limiter != nil {
-		d.limiter.observe(request, response)
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 || blocked {
-		if message := jinguoErrorMessage(data); message != "" && !blocked {
-			return nil, &jinguoStatusError{message: "禁果接口返回失败：" + message}
+		lastErr = lineErr.err
+		if ctx.Err() != nil {
+			break
 		}
-		return nil, &jinguoStatusError{message: d.catalogResponseError(request, response, data).Error()}
 	}
-	if readErr != nil || int64(len(data)) > limit {
-		return nil, errors.New("禁果返回的数据过大或读取失败")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.UseNumber()
-	var decoded any
-	if decoder.Decode(&decoded) != nil || decoder.Decode(new(any)) != io.EOF {
-		return nil, errors.New("禁果返回的数据格式无效")
-	}
-	return decoded, nil
+	return nil, lastErr
 }
 
-func jinguoErrorMessage(data []byte) string {
-	var row map[string]any
-	if json.Unmarshal(data, &row) != nil {
-		return ""
+func (client *jinguoAPIClient) requestBase(ctx context.Context, base, method, route string, body []byte, token, deviceID string) ([]byte, error) {
+	d := client.downloader
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
 	}
-	message := mapString(row, "message", "msg", "tip")
-	if message == "" || len([]rune(message)) > 180 || strings.ContainsAny(message, "\r\n") {
-		return ""
+	request, err := http.NewRequestWithContext(ctx, method, base+route, reader)
+	if err != nil {
+		return nil, errors.New("无法创建禁果请求")
 	}
-	return message
+	if token != "" {
+		request.Header.Set("Authorization", token)
+	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("temp", "test")
+	request.Header.Set("X-User-Agent", fmt.Sprintf(jinguoXUserAgent, deviceID))
+	request.Header.Set("User-Agent", userAgent)
+
+	response, err := d.doCatalogRequestWithTimeout(request, providerTimeout)
+	if err != nil {
+		return nil, &jinguoLineError{fmt.Errorf("禁果连接失败：%w", publicError(err))}
+	}
+	data, readErr := io.ReadAll(io.LimitReader(response.Body, providerMaxBodyBytes+1))
+	_ = response.Body.Close()
+	if readErr != nil || len(data) > providerMaxBodyBytes {
+		return nil, &jinguoLineError{errors.New("禁果返回的数据过大或读取失败")}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		err := d.catalogResponseError(request, response, data)
+		if response.StatusCode >= 500 || catalogResponseBlockReason(response, data) != "" {
+			return nil, &jinguoLineError{err}
+		}
+		return nil, err
+	}
+	var envelope apiEnvelope
+	if json.Unmarshal(data, &envelope) != nil {
+		return nil, errors.New("禁果返回的数据格式无效")
+	}
+	if code := strings.Trim(string(envelope.Code), `"`); code != "200" {
+		message := firstNonEmpty(envelope.Msg, "未知错误")
+		if token != "" {
+			message = strings.ReplaceAll(message, token, "[已隐藏]")
+		}
+		return nil, &jinguoAPIError{code: truncate(code, 20), message: truncate(message, 160)}
+	}
+	payload := envelope.Data
+	if apiHashEnabled(envelope.Hash) && len(payload) > 0 {
+		var encrypted string
+		if json.Unmarshal(payload, &encrypted) != nil {
+			return nil, errors.New("禁果返回的加密数据格式无效")
+		}
+		if payload, err = decryptResponse(encrypted, []byte(jinguoProtocol.InterfaceKey)); err != nil {
+			return nil, errors.New("禁果返回的数据无法解密，接口可能已变更")
+		}
+	}
+	if len(payload) == 0 {
+		payload = []byte("null")
+	}
+	return payload, nil
 }

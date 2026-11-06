@@ -5,7 +5,10 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -64,6 +67,83 @@ func nativeText(value any) string {
 		return strconv.Itoa(v)
 	}
 	return ""
+}
+
+func (d *Downloader) fetchMediaPlaylist(ctx context.Context, address, referer string) (string, string, error) {
+	if !isProviderHTTPMediaURL(address) {
+		return "", "", errors.New("播放列表地址无效")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	if err != nil {
+		return "", "", err
+	}
+	request.Header.Set("Referer", referer)
+	if d.limiter != nil {
+		release, err := d.limiter.acquire(ctx, request)
+		if err != nil {
+			return "", "", err
+		}
+		defer release()
+	}
+	transport := *d.client
+	transport.Jar = nil
+	response, err := transport.Do(request)
+	if err != nil {
+		return "", "", fmt.Errorf("播放列表连接失败：%w", publicError(err))
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, (4<<20)+1))
+	if err != nil || len(body) > 4<<20 {
+		return "", "", errors.New("播放列表过大或读取失败")
+	}
+	if response.StatusCode != http.StatusOK || catalogResponseBlockReason(response, body) != "" {
+		return "", "", d.catalogResponseError(request, response, body)
+	}
+	text := strings.TrimSpace(strings.TrimPrefix(string(body), "\ufeff"))
+	if !strings.HasPrefix(text, "#EXTM3U") {
+		var envelope apiEnvelope
+		if json.Unmarshal(body, &envelope) == nil && strings.Trim(string(envelope.Code), `"`) == "5005" {
+			return "", "", &legacyAPIError{code: "5005", message: "播放会话已失效"}
+		}
+		return "", "", errors.New("站源未返回有效的播放列表，链接可能已失效")
+	}
+	finalURL := address
+	if response.Request != nil && response.Request.URL != nil {
+		finalURL = response.Request.URL.String()
+	}
+	return text, finalURL, nil
+}
+
+func validNativeCoverURL(address *url.URL) bool {
+	return address != nil && (address.Scheme == "https" || address.Scheme == "http") && address.Hostname() != "" && address.User == nil
+}
+
+func legacyCoverURL(value any) string {
+	address := strings.TrimSpace(coverPathFromAny(value))
+	if address == "" {
+		return ""
+	}
+	if strings.HasPrefix(address, "//") {
+		address = "https:" + address
+	}
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.User != nil {
+		return ""
+	}
+	if parsed.IsAbs() {
+		if validNativeCoverURL(parsed) {
+			return address
+		}
+		return ""
+	}
+	if strings.Contains(address, "..") || strings.Contains(address, "://") {
+		return ""
+	}
+	address = strings.TrimLeft(address, "/")
+	if strings.HasPrefix(address, "upload/") || strings.HasPrefix(address, "upload_01/") {
+		return "https://pic.zdmhyg.cn/" + address
+	}
+	return "https://zzzznnn.lkkwip.cn/" + address
 }
 
 func firstPresent(values map[string]any, keys ...string) any {

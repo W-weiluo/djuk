@@ -33,6 +33,8 @@ type Downloader struct {
 	ffmpegInstaller       *ffmpegInstaller
 	hongguoOnce           sync.Once
 	hongguo               *hongguoAppClient
+	jinguoDuanjuOnce      sync.Once
+	jinguoDuanju          *jinguoDuanjuAPIClient
 	jinguoOnce            sync.Once
 	jinguo                *jinguoAPIClient
 	legacyOnce            sync.Once

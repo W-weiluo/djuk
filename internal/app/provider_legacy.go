@@ -68,9 +68,51 @@ type listResponse struct {
 }
 
 type detailResponse struct {
+	Drama
 	Title    string    `json:"title"`
 	Name     string    `json:"name"`
 	Chapters []Chapter `json:"chapters"`
+}
+
+func (detail *detailResponse) UnmarshalJSON(body []byte) error {
+	var core struct {
+		Title    string    `json:"title"`
+		Name     string    `json:"name"`
+		Chapters []Chapter `json:"chapters"`
+	}
+	if err := json.Unmarshal(body, &core); err != nil {
+		return err
+	}
+	var fields map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&fields); err != nil {
+		return err
+	}
+	detail.Title, detail.Name, detail.Chapters = core.Title, core.Name, core.Chapters
+	detail.Drama = Drama{
+		ID: mapString(fields, "id"), Title: core.Title, Name: core.Name,
+		Desc: mapString(fields, "desc", "description", "summary"), Intro: mapString(fields, "intro"),
+		Cover: fields["cover"], CoverURL: fields["coverUrl"], CoverURLSnake: fields["cover_url"],
+		Image: fields["image"], ImageURL: fields["imageUrl"], ImageURLSnake: fields["image_url"],
+		Img: fields["img"], Pic: fields["pic"], Picture: fields["picture"], Poster: fields["poster"],
+		Thumb: fields["thumb"], Thumbnail: fields["thumbnail"],
+		TotalEpisode: fields["totalEpisode"], TotalEpisodeSnake: fields["total_episode"],
+		EpisodeCount: fields["episodeCount"], EpisodeCountSnake: fields["episode_count"],
+		ChapterCount: fields["chapterCount"], ChapterCountSnake: fields["chapter_count"],
+		Total: fields["total"], Episodes: fields["episodes"],
+		CategoryName: mapString(fields, "categoryName", "category_name", "typeName", "type_name", "sortName", "sort_name", "category"),
+		Heat:         mapString(fields, "heat"), Views: mapString(fields, "views", "play_count"),
+		OnlineDate: mapString(fields, "onlineDate", "online_date", "issue_date"),
+		Tags:       mapStringSlice(fields, "tags"), ReleaseStatus: mapString(fields, "releaseStatus", "release_status"),
+	}
+	if value, known := fields["vip"].(bool); known {
+		detail.Drama.VIP = &value
+	}
+	if detail.Drama.ReleaseStatus == "" {
+		detail.Drama.ReleaseStatus = releaseStatusFromRemark(mapString(fields, "remark"))
+	}
+	return nil
 }
 
 func pkcs7Pad(src []byte, blockSize int) []byte {
