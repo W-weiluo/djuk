@@ -327,6 +327,9 @@ func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID s
 	case sourceJinguo:
 		drama, chapters, err := d.fetchJinguoDetail(ctx, sourceID)
 		return drama.DisplayTitle(), chapters, err
+	case sourceHeitao:
+		drama, chapters, err := d.fetchHeitaoDetail(ctx, sourceID)
+		return drama.DisplayTitle(), chapters, err
 	default:
 		return "", nil, fmt.Errorf("unsupported provider source: %s", source)
 	}
@@ -458,7 +461,17 @@ func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer stri
 			if err != nil {
 				return "", err
 			}
-			req.Header.Set("User-Agent", userAgent)
+			if agent, ok := ctx.Value(providerTextUserAgentKey{}).(string); ok && agent != "" {
+				req.Header.Set("User-Agent", agent)
+			} else {
+				req.Header.Set("User-Agent", userAgent)
+			}
+			if cookie, ok := ctx.Value(providerTextCookieKey{}).(string); ok && cookie != "" {
+				req.Header.Set("Cookie", cookie)
+			}
+			if noCache, _ := ctx.Value(providerTextNoCacheKey{}).(bool); noCache {
+				req.Header.Set("Cache-Control", "no-cache")
+			}
 			if providerSourceForURL(rawURL) != "" {
 				req.Header.Set("Referer", providerRefererForURL(candidate, referer))
 			} else {

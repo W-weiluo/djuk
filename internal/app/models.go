@@ -8,6 +8,7 @@ import (
 )
 
 type Drama struct {
+	Badge           string          `json:"badge,omitempty"`
 	VIP               *bool              `json:"vip,omitempty"`
 	ID                string             `json:"id"`
 	Source            string             `json:"source,omitempty"`

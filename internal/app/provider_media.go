@@ -34,6 +34,8 @@ func (d *Downloader) providerBaseURL(source string) string {
 		configured, fallback = d.cfg.HongguoURL, hongguoBaseURL
 	case sourceJinguoDuanju:
 		configured, fallback = jinguoDuanjuContentSite(d.cfg.JinguoDuanjuURL), jinguoDuanjuBaseURL
+	case sourceHeitao:
+		configured, fallback = d.cfg.HeitaoURL, heitaoBaseURL
 	default:
 		fallback = "https://d2pypzndaqisk.cloudfront.net"
 	}
@@ -57,6 +59,8 @@ func providerSourceForURL(raw string) string {
 		return sourceHongguo
 	case host == "jinguoduanju.app" || host == "www.jinguoduanju.app" || host == "play.jinguoduanju.app" || host == "jgdj.app" || host == "www.jgdj.app":
 		return sourceJinguoDuanju
+	case host == "heitaodj.com" || host == "www.heitaodj.com":
+		return sourceHeitao
 	default:
 		return ""
 	}
@@ -105,6 +109,9 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	}
 	if chapter.Source == sourceJinguo {
 		return d.resolveJinguoMedia(ctx, task)
+	}
+	if chapter.Source == sourceHeitao {
+		return d.resolveHeitaoMedia(ctx, task)
 	}
 	if chapter.PageURL == "" && (chapter.Source == sourceHuangguoAI || chapter.Source == sourceHuangguoVideo) {
 		if source, sourceID, valid := splitProviderDramaID(task.DramaID); valid {

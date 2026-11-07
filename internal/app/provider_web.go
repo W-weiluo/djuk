@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/html"
 )
 
 var webProviderNumericID = regexp.MustCompile(`^[1-9][0-9]{0,17}$`)
@@ -146,6 +148,56 @@ func legacyCoverURL(value any) string {
 	return "https://zzzznnn.lkkwip.cn/" + address
 }
 
+func providerMediaOrigin(address *url.URL) string {
+	if address == nil {
+		return ""
+	}
+	scheme := strings.ToLower(address.Scheme)
+	host := strings.ToLower(address.Hostname())
+	if host != "" && strings.HasSuffix(host, ":80") && scheme == "http" {
+		host = strings.TrimSuffix(host, ":80")
+	}
+	if host != "" && strings.HasSuffix(host, ":443") && scheme == "https" {
+		host = strings.TrimSuffix(host, ":443")
+	}
+	return scheme + "://" + host
+}
+
+func dsdRouteParameters(pageURL, reference string) (string, map[string]string, bool) {
+	page, err := url.Parse(pageURL)
+	if err != nil || reference == "" {
+		return "", nil, false
+	}
+	address, err := url.Parse(reference)
+	if err != nil {
+		return "", nil, false
+	}
+	address = page.ResolveReference(address)
+	if address.User != nil || providerMediaOrigin(address) != providerMediaOrigin(page) {
+		return "", nil, false
+	}
+	path := strings.TrimPrefix(address.Path, "/index.php")
+	parts := strings.Split(strings.Trim(strings.TrimSuffix(path, ".html"), "/"), "/")
+	if len(parts) < 2 || parts[0] != "vod" || len(parts)%2 != 0 {
+		return "", nil, false
+	}
+	switch parts[1] {
+	case "type", "show", "search", "play", "detail":
+	default:
+		return "", nil, false
+	}
+	parameters := map[string]string{}
+	for index := 2; index+1 < len(parts); index += 2 {
+		parameters[parts[index]] = parts[index+1]
+	}
+	for key, values := range address.Query() {
+		if len(values) == 1 && parameters[key] == "" {
+			parameters[key] = values[0]
+		}
+	}
+	return parts[1], parameters, true
+}
+
 func firstPresent(values map[string]any, keys ...string) any {
 	for _, key := range keys {
 		if value, ok := values[key]; ok && value != nil && nativeText(value) != "" {
@@ -153,4 +205,110 @@ func firstPresent(values map[string]any, keys ...string) any {
 		}
 	}
 	return nil
+}
+
+type providerTextUserAgentKey struct{}
+
+type providerTextCookieKey struct{}
+
+type providerTextNoCacheKey struct{}
+
+func providerHTMLAttr(node *html.Node, name string) string {
+	if node == nil {
+		return ""
+	}
+	for _, attribute := range node.Attr {
+		if strings.EqualFold(attribute.Key, name) {
+			return attribute.Val
+		}
+	}
+	return ""
+}
+
+func providerHTMLClass(node *html.Node, name string) bool {
+	if node == nil {
+		return false
+	}
+	for _, class := range strings.Split(providerHTMLAttr(node, "class"), " ") {
+		if strings.TrimSpace(class) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func providerHTMLNodes(root *html.Node, match func(*html.Node) bool) []*html.Node {
+	if root == nil {
+		return nil
+	}
+	var nodes []*html.Node
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if match(node) {
+			nodes = append(nodes, node)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(root)
+	return nodes
+}
+
+func providerHTMLFirstClass(root *html.Node, names ...string) *html.Node {
+	if root == nil {
+		return nil
+	}
+	var match func(*html.Node) bool
+	match = func(node *html.Node) bool {
+		for _, name := range names {
+			if providerHTMLClass(node, name) {
+				return true
+			}
+		}
+		return false
+	}
+	nodes := providerHTMLNodes(root, match)
+	if len(nodes) == 0 {
+		return nil
+	}
+	return nodes[0]
+}
+
+func providerHTMLText(root *html.Node) string {
+	if root == nil {
+		return ""
+	}
+	var builder strings.Builder
+	var walk func(*html.Node)
+	walk = func(node *html.Node) {
+		if node.Type == html.TextNode {
+			builder.WriteString(node.Data)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(root)
+	return strings.TrimSpace(builder.String())
+}
+
+func (d *Downloader) fetchProviderPage(ctx context.Context, address, referer, agent string) (*html.Node, string, error) {
+	responses := &playbackResponseURLs{}
+	ctx = context.WithValue(ctx, playbackResponseURLsKey{}, responses)
+	if agent != "" {
+		ctx = context.WithValue(ctx, providerTextUserAgentKey{}, agent)
+	}
+	body, err := d.fetchProviderText(ctx, address, referer)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(body) > 4<<20 {
+		return nil, "", errors.New("站源页面过大")
+	}
+	if actual, found := responses.values.Load(address); found {
+		address = actual.(string)
+	}
+	document, err := html.Parse(strings.NewReader(body))
+	return document, address, err
 }

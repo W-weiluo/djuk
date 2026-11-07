@@ -30,6 +30,12 @@ func (d *Downloader) fetchDramaCoverAddress(ctx context.Context, drama Drama) (s
 			return "", errors.New("红果详情返回了其他剧集")
 		}
 		return hongguoCoverAddress(mapString(row, "series_cover", "cover")), nil
+	case sourceHeitao:
+		drama, _, err := d.fetchHeitaoDetail(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		return providerCoverAddress(bestDramaCover(drama), ""), nil
 	case sourceHuangdou:
 		if !rankingSourceID.MatchString(id) {
 			return "", errors.New("无效的黄豆剧集 ID")

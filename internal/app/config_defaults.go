@@ -53,6 +53,7 @@ type Config struct {
 	HuangdouURL           string `json:"huangdouURL,omitempty"`
 	HongguoURL            string `json:"hongguoURL,omitempty"`
 	JinguoDuanjuURL       string `json:"jinguoDuanjuURL,omitempty"`
+	HeitaoURL             string `json:"heitaoURL,omitempty"`
 	WebhookURL            string `json:"webhookURL,omitempty"`
 }
 
@@ -143,6 +144,7 @@ func applyConfigEnvironment(cfg *Config) {
 	setIf(&cfg.HuangdouURL, "JUKU_HUANGDOU_URL")
 	setIf(&cfg.HongguoURL, "JUKU_HONGGUO_URL")
 	setIf(&cfg.JinguoDuanjuURL, "JUKU_JINGUO_DUANJU_URL")
+	setIf(&cfg.HeitaoURL, "JUKU_HEITAO_URL")
 	setIf(&cfg.ProxyURL, "JUKU_PROXY_URL")
 	setIf(&cfg.HuangguoProxyURL, "JUKU_PROXY_HUANGGUO")
 	setIf(&cfg.HuangdouProxyURL, "JUKU_PROXY_HUANGDOU")
@@ -162,7 +164,7 @@ func (c Config) validate() error {
 	if key, err := hex.DecodeString(c.AESKeyHex); c.AESKeyHex != "" && (err != nil || len(key) != aes.BlockSize) {
 		return errors.New("aesKeyHex 必须是 16 字节 AES 密钥的 hex 编码")
 	}
-	for _, endpoint := range []string{c.APIBase, c.HuangguoAIURL, c.HuangguoVideoURL, c.HuangdouURL, c.HongguoURL, c.JinguoDuanjuURL} {
+	for _, endpoint := range []string{c.APIBase, c.HuangguoAIURL, c.HuangguoVideoURL, c.HuangdouURL, c.HongguoURL, c.JinguoDuanjuURL, c.HeitaoURL} {
 		if endpoint != "" && !isProviderHTTPMediaURL(endpoint) {
 			return errors.New("站点地址必须是有效的 HTTP/HTTPS URL")
 		}

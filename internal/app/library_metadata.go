@@ -35,7 +35,7 @@ type libraryMetadataProgress struct {
 
 func supportsSortMetadata(drama Drama) bool {
 	switch dramaProvider(drama) {
-	case sourceHongguo, sourceHuangdou, sourceHuangguoAI, sourceHuangguoVideo, sourceJinguoDuanju, sourceJinguo:
+	case sourceHongguo, sourceHuangdou, sourceHuangguoAI, sourceHuangguoVideo, sourceJinguoDuanju, sourceJinguo, sourceHeitao:
 		return true
 	}
 	return false
@@ -215,7 +215,7 @@ func (d *Downloader) fetchMoreLibrary(ctx context.Context, source string) ([]Dra
 		reportLibraryProgress(ctx, sourceHongguo, items, failures[sourceHongguo], true)
 		patches = mergeSourceDramas(patches, items, nil, sourceHongguo)
 	}
-	for _, provider := range []string{"cloudfront", sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceJinguoDuanju, sourceJinguo} {
+	for _, provider := range []string{"cloudfront", sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceJinguoDuanju, sourceJinguo, sourceHeitao} {
 		if matchesSourceFilter(provider, source) {
 			reportLibraryProgress(ctx, provider, nil, failures[provider], true)
 		}
