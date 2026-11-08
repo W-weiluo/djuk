@@ -24,6 +24,9 @@ func (d *Downloader) fetchDramaMetadata(ctx context.Context, drama Drama) (Drama
 	case sourceHeitao:
 		drama, _, err := d.fetchHeitaoDetail(ctx, id)
 		return drama, err
+	case sourceBeabox:
+		drama, _, err := d.fetchBeaboxDetail(ctx, id)
+		return drama, err
 	case sourceHuangdou:
 		row, err := d.huangdouDetail(ctx, id)
 		if err != nil {

@@ -36,6 +36,12 @@ func (d *Downloader) fetchDramaCoverAddress(ctx context.Context, drama Drama) (s
 			return "", err
 		}
 		return providerCoverAddress(bestDramaCover(drama), ""), nil
+	case sourceBeabox:
+		drama, _, err := d.fetchBeaboxDetail(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		return providerCoverAddress(bestDramaCover(drama), ""), nil
 	case sourceHuangdou:
 		if !rankingSourceID.MatchString(id) {
 			return "", errors.New("无效的黄豆剧集 ID")

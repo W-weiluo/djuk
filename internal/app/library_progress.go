@@ -65,7 +65,7 @@ func (a *UIApp) startLibraryLoadLocked(source string, mode libraryLoadMode, prio
 	if a.librarySources == nil {
 		a.librarySources = map[string]librarySourceState{}
 	}
-	for _, provider := range []string{"cloudfront", sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceJinguoDuanju, sourceJinguo, sourceHeitao} {
+	for _, provider := range []string{"cloudfront", sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceJinguoDuanju, sourceJinguo, sourceHeitao, sourceBeabox} {
 		if matchesSourceFilter(provider, source) && sourceAllowed(base, provider) {
 			state := a.librarySources[provider]
 			state.Status = "loading"

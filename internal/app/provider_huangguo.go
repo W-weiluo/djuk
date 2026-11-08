@@ -330,6 +330,9 @@ func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID s
 	case sourceHeitao:
 		drama, chapters, err := d.fetchHeitaoDetail(ctx, sourceID)
 		return drama.DisplayTitle(), chapters, err
+	case sourceBeabox:
+		drama, chapters, err := d.fetchBeaboxDetail(ctx, sourceID)
+		return drama.DisplayTitle(), chapters, err
 	default:
 		return "", nil, fmt.Errorf("unsupported provider source: %s", source)
 	}

@@ -32,6 +32,23 @@ func (d *Downloader) fetchAllDramas(ctx context.Context, sourceFilter string) ([
 		{name: sourceHuangguoVideo, timeout: 2 * time.Minute, fn: d.fetchHuangguoVideoDramas},
 		{name: sourceHuangdou, timeout: 2 * time.Minute, fn: d.fetchHuangdouDramas},
 		{name: sourceJinguoDuanju, timeout: 2 * time.Minute, fn: func(ctx context.Context) ([]Drama, error) { return d.fetchJinguoDuanjuDramas(ctx, "", "") }},
+		{name: sourceBeabox, timeout: 2 * time.Minute, fn: func(ctx context.Context) ([]Drama, error) {
+			var all []Drama
+			for page := 1; page <= 100; page++ {
+				items, more, err := d.fetchBeaboxCatalogPage(ctx, page, "", "")
+				if err != nil {
+					if len(all) > 0 {
+						return all, nil
+					}
+					return nil, err
+				}
+				all = append(all, items...)
+				if !more {
+					break
+				}
+			}
+			return all, nil
+		}},
 		{name: sourceHeitao, timeout: 2 * time.Minute, fn: func(ctx context.Context) ([]Drama, error) {
 			var all []Drama
 			for page := 1; page <= 100; page++ {

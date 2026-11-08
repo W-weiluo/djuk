@@ -9,6 +9,7 @@ const (
 	sourceHuangguoVideo = "huangguo-video"
 	sourceHuangdou      = "huangdou"
 	sourceHongguo       = "hongguo"
+	sourceBeabox        = "beabox"
 	sourceHeitao        = "heitao"
 	sourceJinguoDuanju  = "jinguoduanju"
 	sourceJinguo        = "jinguo"
@@ -41,7 +42,7 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceJinguoDuanju, sourceJinguo, sourceHeitao:
+	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceJinguoDuanju, sourceJinguo, sourceHeitao, sourceBeabox:
 		return true
 	default:
 		return false
@@ -64,6 +65,8 @@ func canonicalProviderSource(source string) string {
 		return sourceJinguo
 	case "heitao", "heitaodj.com", "www.heitaodj.com":
 		return sourceHeitao
+	case "beabox":
+		return sourceBeabox
 	default:
 		return strings.TrimSpace(source)
 	}

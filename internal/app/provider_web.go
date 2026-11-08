@@ -3,13 +3,19 @@ package app
 // 网页系站源(禁果等)共用的校验与播放地址准备辅助,移植自 guoapp provider_web.go。
 
 import (
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -198,6 +204,26 @@ func dsdRouteParameters(pageURL, reference string) (string, map[string]string, b
 	return parts[1], parameters, true
 }
 
+func writeNativeCacheFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".cache-write-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temporary.Name())
+	_, writeErr := temporary.Write(data)
+	closeErr := temporary.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(temporary.Name(), path)
+}
+
 func firstPresent(values map[string]any, keys ...string) any {
 	for _, key := range keys {
 		if value, ok := values[key]; ok && value != nil && nativeText(value) != "" {
@@ -312,3 +338,92 @@ func (d *Downloader) fetchProviderPage(ctx context.Context, address, referer, ag
 	document, err := html.Parse(strings.NewReader(body))
 	return document, address, err
 }
+
+func nativeDecodeCover(data []byte) []byte {
+	if nativeIsCoverImage(data) {
+		return data
+	}
+	if image, ok := nativeDecodeTextCover(data); ok {
+		return image
+	}
+	encrypted := data
+	if bytes.HasPrefix(encrypted, []byte("Salted__")) && len(encrypted) > 16 {
+		encrypted = encrypted[16:]
+	}
+	if len(encrypted) > 0 {
+		block, err := aes.NewCipher([]byte("f5d965df75336270"))
+		if err == nil {
+			plain := make([]byte, (len(encrypted)+aes.BlockSize-1)/aes.BlockSize*aes.BlockSize)
+			copy(plain, encrypted)
+			cipher.NewCBCDecrypter(block, []byte("97b60394abc2fbe1")).CryptBlocks(plain, plain)
+			plain = plain[:len(encrypted)]
+			if unpadded, err := pkcs7Unpad(plain, aes.BlockSize); err == nil {
+				plain = unpadded
+			}
+			if nativeIsCoverImage(plain) {
+				return plain
+			}
+		}
+	}
+	plain := append([]byte(nil), data...)
+	key := []byte("2019ysapp7527")
+	for index := 0; index < min(100, len(plain)); index++ {
+		plain[index] ^= key[index%len(key)]
+	}
+	if nativeIsCoverImage(plain) {
+		return plain
+	}
+	return data
+}
+
+func nativeDecodeTextCover(data []byte) ([]byte, bool) {
+	if len(data) < 16 {
+		return nil, false
+	}
+	for index, char := range []byte("data:") {
+		if data[index]^18 != char {
+			return nil, false
+		}
+	}
+	decoded := append([]byte(nil), data...)
+	for index := 0; index < min(4096, len(decoded)); index++ {
+		decoded[index] ^= 18
+	}
+	text := string(decoded)
+	if !strings.HasPrefix(text, "data:image/") {
+		return nil, false
+	}
+	comma := strings.Index(text, ",")
+	if comma < 0 || comma+1 >= len(text) {
+		return nil, false
+	}
+	encoded := strings.TrimSpace(text[comma+1:])
+	if decodedBytes, err := base64.StdEncoding.DecodeString(encoded); err == nil {
+		return decodedBytes, true
+	}
+	if decodedBytes, err := base64.RawStdEncoding.DecodeString(encoded); err == nil {
+		return decodedBytes, true
+	}
+	return nil, false
+}
+
+func nativeIsCoverImage(data []byte) bool {
+	if isHEICImage(data) {
+		return true
+	}
+	if bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) ||
+		bytes.HasPrefix(data, []byte{0xff, 0xd8, 0xff}) || bytes.HasPrefix(data, []byte("GIF87a")) || bytes.HasPrefix(data, []byte("GIF89a")) {
+		return true
+	}
+	if len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP" {
+		return true
+	}
+	if len(data) >= 16 && string(data[4:8]) == "ftyp" {
+		switch string(data[8:12]) {
+		case "avif", "avis", "heic", "heix", "hevc", "hevx", "mif1":
+			return true
+		}
+	}
+	return false
+}
+

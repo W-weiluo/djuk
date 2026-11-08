@@ -33,6 +33,12 @@ type Downloader struct {
 	ffmpegInstaller       *ffmpegInstaller
 	hongguoOnce           sync.Once
 	hongguo               *hongguoAppClient
+	beaboxDiscoverMu      sync.Mutex
+	beaboxMu              sync.Mutex
+	beaboxLoaded          bool
+	beaboxSite            string
+	beaboxPool            []string
+	beaboxPoolNext        time.Time
 	jinguoDuanjuOnce      sync.Once
 	jinguoDuanju          *jinguoDuanjuAPIClient
 	jinguoOnce            sync.Once
