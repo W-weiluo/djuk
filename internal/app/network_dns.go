@@ -44,10 +44,39 @@ func protectedCDNHost(host string) bool {
 	return isHuangguoImageCDNHost(host) || strings.HasSuffix(host, ".lkkwip.cn")
 }
 
+// poisonedDialAddress 判断拨号失败是否因为系统 DNS 把域名解析到了
+// 0.0.0.0 或环回地址(常见于被污染的网络),移植自 guoapp ecde1e34。
+func poisonedDialAddress(err error) bool {
+	var dialErr *net.OpError
+	if !errors.As(err, &dialErr) || dialErr.Op != "dial" {
+		return false
+	}
+	address, ok := dialErr.Addr.(*net.TCPAddr)
+	return ok && (address.IP.IsUnspecified() || address.IP.IsLoopback())
+}
+
 func (resolver *safeDNSDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || !protectedCDNHost(host) {
-		return resolver.dialer.DialContext(ctx, network, address)
+		connection, dialErr := resolver.dialer.DialContext(ctx, network, address)
+		if dialErr == nil || !poisonedDialAddress(dialErr) {
+			return connection, dialErr
+		}
+		// 系统 DNS 把域名解析到 0.0.0.0 或环回地址时,改用 DoH 结果重连,
+		// 修复部分网络下红果设备注册失败(上游 ecde1e34)。
+		addresses, lookupErr := resolver.lookup(ctx, host)
+		if lookupErr != nil {
+			return connection, dialErr
+		}
+		var lastErr error
+		for _, resolved := range addresses {
+			connection, dialErr := resolver.dialer.DialContext(ctx, network, net.JoinHostPort(resolved, port))
+			if dialErr == nil {
+				return connection, nil
+			}
+			lastErr = dialErr
+		}
+		return connection, lastErr
 	}
 	addresses, err := resolver.lookup(ctx, host)
 	if err != nil {
