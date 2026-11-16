@@ -39,6 +39,8 @@ type Downloader struct {
 	beaboxSite            string
 	beaboxPool            []string
 	beaboxPoolNext        time.Time
+	hongguoV5Mu           sync.Mutex
+	hongguoV5Process      *hongguoPlaybackV5Process
 	jinguoDuanjuOnce      sync.Once
 	jinguoDuanju          *jinguoDuanjuAPIClient
 	jinguoOnce            sync.Once

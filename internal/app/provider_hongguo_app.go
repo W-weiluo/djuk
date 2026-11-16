@@ -170,7 +170,11 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		}
 		ctx = context.WithValue(ctx, requestLaneKey{}, "hongguo-helper")
 	}
+	playback := path == hongguoPlaybackPath
 	query := hongguoAppQuery(deviceID, installID)
+	if playback {
+		query = hongguoPlaybackQuery(deviceID, installID)
+	}
 	for key, values := range extra {
 		query[key] = append([]string(nil), values...)
 	}
@@ -199,14 +203,23 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 				return nil, ctx.Err()
 			}
 		}
-		request, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(base, "/")+path, bytes.NewReader(body))
+		requestBase := base
+		if playback {
+			requestBase = hongguoPlaybackBaseURL
+		}
+		request, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(requestBase, "/")+path, bytes.NewReader(body))
 		if err != nil {
 			return nil, err
 		}
-		request.Header.Set("User-Agent", hongguoAppUserAgent)
-		request.Header.Set("Accept", "application/json")
-		request.Header.Set("X-XS-From-Web", "0")
-		request.Header.Set("Sdk-Version", "2")
+		if playback {
+			request.Header.Set("User-Agent", hongguoPlaybackUserAgent)
+			request.Header.Set("Accept", "application/json")
+		} else {
+			request.Header.Set("User-Agent", hongguoAppUserAgent)
+			request.Header.Set("Accept", "application/json")
+			request.Header.Set("X-XS-From-Web", "0")
+			request.Header.Set("Sdk-Version", "2")
+		}
 		var commentNonce hongguoCommentNonce
 		if comment {
 			commentNonce, err = newHongguoCommentNonce()
@@ -221,6 +234,19 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		}
 		response, err := downloader.doPreparedCatalogRequest(request, 20*time.Second, func(prepared *http.Request) {
 			now := time.Now()
+			if playback {
+				signedURL, headers, signErr := downloader.hongguoSignPlaybackV5(requestBase+hongguoPlaybackPath, query, body, now)
+				if signErr != nil {
+					return
+				}
+				if parsed, parseErr := url.Parse(signedURL); parseErr == nil {
+					prepared.URL = parsed
+				}
+				for key, value := range headers {
+					prepared.Header.Set(key, value)
+				}
+				return
+			}
 			query.Set("_rticket", strconv.FormatInt(now.UnixMilli(), 10))
 			prepared.URL.RawQuery = query.Encode()
 			if comment {

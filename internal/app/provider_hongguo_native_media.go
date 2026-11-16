@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,14 +18,53 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 		return providerMedia{}, errors.New("红果视频 ID 无效")
 	}
 	payload := map[string]any{
-		"video_id": videoID, "content_type": 1,
-		"biz_param": map[string]any{"need_all_video_definition": true, "video_platform": 3},
+		"biz_param": map[string]any{
+			"detail_page_version": 0, "device_level": 3, "disable_digg_stat": false, "disable_video_relate_book": false,
+			"need_all_video_definition": true, "need_mp4_align": false, "use_os_player": false, "use_server_dns": false, "video_platform": 1024,
+		},
+		"mixed_video_id_map": map[string]any{"1004": []string{videoID}},
+		"dr_scene":           "player",
 	}
-	result, err := downloader.hongguoAppRequest(ctx, http.MethodPost, "/novel/player/video_model/v1/", nil, payload)
+	var lastErr error
+	for _, helper := range []bool{false, true} {
+		media, err := downloader.fetchHongguoAppMedia(context.WithValue(ctx, hongguoHelperDeviceKey{}, helper), videoID, payload, helper)
+		if err == nil {
+			return media, nil
+		}
+		lastErr = err
+	}
+	var rejected string
+	if client := downloader.hongguoClient(); client != nil {
+		client.mu.Lock()
+		rejected, _, _ = client.deviceLocked(true)
+		client.mu.Unlock()
+	}
+	if err := downloader.ensureHongguoDevice(ctx, true, rejected); err == nil {
+		if media, err := downloader.fetchHongguoAppMedia(context.WithValue(ctx, hongguoHelperDeviceKey{}, true), videoID, payload, true); err == nil {
+			return media, nil
+		}
+	}
+	return providerMedia{}, lastErr
+}
+
+func (downloader *Downloader) fetchHongguoAppMedia(ctx context.Context, videoID string, payload map[string]any, helper bool) (providerMedia, error) {
+	result, err := downloader.hongguoAppRequest(ctx, http.MethodPost, hongguoPlaybackPath, nil, payload)
+	fmt.Fprintln(os.Stderr, "[DEBUG-v5] 请求完成: err =", err)
 	if err != nil {
 		return providerMedia{}, err
 	}
-	data := nestedMap(result, "data")
+	entries := nestedMap(result, "data")
+	fmt.Fprintln(os.Stderr, "[DEBUG-v5] data 顶层键:", len(entries))
+	data := entries
+	if row, ok := entries["1004"].(map[string]any); ok {
+		data = row
+	}
+	if inner := nestedMap(data, videoID); len(inner) > 0 {
+		data = inner
+	}
+	if len(data) == 0 {
+		return providerMedia{}, errors.New("红果 App 未返回所请求的分集播放信息")
+	}
 	model, _ := data["video_model"].(map[string]any)
 	if encoded, ok := data["video_model"].(string); ok && encoded != "" {
 		if decoded, err := decodeHongguoBase64(encoded); err == nil && len(decoded) > 0 {
