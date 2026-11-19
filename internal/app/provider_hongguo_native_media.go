@@ -19,7 +19,7 @@ func (downloader *Downloader) resolveHongguoAppMedia(ctx context.Context, videoI
 	}
 	payload := map[string]any{
 		"biz_param": map[string]any{
-			"detail_page_version": 0, "device_level": 3, "disable_digg_stat": false, "disable_video_relate_book": false,
+			"detail_page_version": 0, "device_level": 1, "disable_digg_stat": false, "disable_video_relate_book": false,
 			"need_all_video_definition": true, "need_mp4_align": false, "use_os_player": false, "use_server_dns": false, "video_platform": 1024,
 		},
 		"mixed_video_id_map": map[string]any{"1004": []string{videoID}},
