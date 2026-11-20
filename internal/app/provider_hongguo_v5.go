@@ -22,7 +22,7 @@ import (
 const (
 	hongguoPlaybackBaseURL   = "https://api5-normal-sinfonlinea.fqnovel.com"
 	hongguoPlaybackPath      = "/novel/player/multi_video_model/player/v1"
-	hongguoPlaybackUserAgent = "com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)"
+	hongguoPlaybackUserAgent = "com.phoenix.read/" + hongguoAppVersionCode + " (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)"
 )
 
 var hongguoRandRead = rand.Read
@@ -438,13 +438,13 @@ func hongguoPlaybackQuery(deviceID, installID string) url.Values {
 	return url.Values{
 		"aid":                 {"8662"},
 		"app_name":            {"novelread"},
-		"version_code":        {"74332"},
-		"version_name":        {"7.4.3.32"},
+		"version_code":        {hongguoAppVersionCode},
+		"version_name":        {hongguoAppVersionName},
 		"channel":             {"vivo_8662_64"},
 		"device_platform":     {"android"},
 		"device_type":         {"PGT-AN10"},
 		"os_version":          {"12"},
-		"update_version_code": {"74332"},
+		"update_version_code": {hongguoAppVersionCode},
 		"iid":                 {installID},
 		"cdid":                {uuidLike()},
 		"device_id":           {deviceID},

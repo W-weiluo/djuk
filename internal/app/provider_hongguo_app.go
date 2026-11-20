@@ -17,7 +17,16 @@ import (
 
 const hongguoAppBaseURL = "https://api5-normal-sinfonlineb.fqnovel.com"
 
-const hongguoAppUserAgent = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
+// 新版播放信息接口(红果模块 1.0.6 起使用),v5 签名 GET 请求。
+const hongguoVideoTabPath = "/reading/bookapi/video_tab/multi_video_model/v1/"
+
+// 红果模块 1.0.7 起客户端版本升级到 7.4.5.32,所有接口与设备注册同步。
+const (
+	hongguoAppVersionCode = "74532"
+	hongguoAppVersionName = "7.4.5.32"
+)
+
+const hongguoAppUserAgent = "com.phoenix.read/74532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 
 type hongguoCatalogCursor struct {
 	Offset        int       `json:"offset"`
@@ -143,8 +152,8 @@ func hongguoCatalogHasMore(state *hongguoCatalogState) bool {
 
 func hongguoAppQuery(deviceID, installID string) url.Values {
 	return url.Values{
-		"aid": {"8662"}, "app_name": {"novelread"}, "version_code": {"73532"}, "version_name": {"7.3.5.32"},
-		"manifest_version_code": {"73532"}, "update_version_code": {"73532"}, "channel": {"update_64"},
+		"aid": {"8662"}, "app_name": {"novelread"}, "version_code": {"74532"}, "version_name": {"7.4.5.32"},
+		"manifest_version_code": {"74532"}, "update_version_code": {"74532"}, "channel": {"update_64"},
 		"device_platform": {"android"}, "os": {"android"}, "ssmix": {"a"}, "device_type": {"25053RT47C"},
 		"device_brand": {"Redmi"}, "language": {"zh"}, "os_api": {"36"}, "os_version": {"16"},
 		"resolution": {"1280*2772"}, "dpi": {"520"}, "ac": {"wifi"}, "device_id": {deviceID}, "iid": {installID},
@@ -171,6 +180,7 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		ctx = context.WithValue(ctx, requestLaneKey{}, "hongguo-helper")
 	}
 	playback := path == hongguoPlaybackPath
+	signedV5 := playback || path == hongguoVideoTabPath
 	query := hongguoAppQuery(deviceID, installID)
 	if playback {
 		query = hongguoPlaybackQuery(deviceID, installID)
@@ -211,7 +221,7 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		if err != nil {
 			return nil, err
 		}
-		if playback {
+		if signedV5 {
 			request.Header.Set("User-Agent", hongguoPlaybackUserAgent)
 			request.Header.Set("Accept", "application/json")
 		} else {
@@ -234,8 +244,8 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		}
 		response, err := downloader.doPreparedCatalogRequest(request, 20*time.Second, func(prepared *http.Request) {
 			now := time.Now()
-			if playback {
-				signedURL, headers, signErr := downloader.hongguoSignPlaybackV5(requestBase+hongguoPlaybackPath, query, body, now)
+			if signedV5 {
+				signedURL, headers, signErr := downloader.hongguoSignPlaybackV5(requestBase+path, query, body, now)
 				if signErr != nil {
 					return
 				}
